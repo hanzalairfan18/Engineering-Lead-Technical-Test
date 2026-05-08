@@ -48,7 +48,7 @@ docker compose up --build
 
 ## API
 
-All endpoints accept and return JSON unless noted. Validation is Zod-driven; errors come back as `{ error: { code, message, details? } }`.
+`/ingest` is `multipart/form-data` (file upload). `/ask` and `/health` are JSON. All responses are JSON. Validation is Zod-driven; errors come back as `{ error: { code, message, details? } }`.
 
 ### `GET /health`
 
@@ -134,7 +134,7 @@ If nothing relevant is found (no chunks, or none above the similarity threshold)
 src/
 ├── api/
 │   ├── controllers/      # thin request handlers, no business logic
-│   ├── plugins/          # error handler, swagger, DI typing
+│   ├── plugins/          # error handler, swagger transform, deps typing
 │   ├── routes/           # one file per resource, Zod schemas attached
 │   └── schemas/          # request/response Zod schemas (single source of truth)
 ├── config/               # env loading + validation
@@ -142,12 +142,13 @@ src/
 │   ├── chunking/         # fixed-window chunker
 │   ├── prompts/          # QA system + user prompt builders
 │   ├── similarity/       # pure cosine similarity
-│   └── vectorstore/      # in-memory store with brute-force search
-├── services/             # workflow orchestration: ingestion, retrieval, embeddings, llm
+│   └── vectorstore/      # VectorStore interface + InMemoryVectorStore impl
+├── services/             # ingestion, retrieval, embeddings, llm,
+│                         # file-extract (PDF/DOCX), document, openai-client
 ├── storage/              # placeholder for future on-disk persistence
 ├── types/                # framework-agnostic domain types
 ├── utils/                # text normalization, ids, error classes
-├── app.ts                # Fastify app factory (composition root)
+├── app.ts                # Fastify app factory + AppOverrides (composition root)
 └── server.ts             # process entry: load config, listen, graceful shutdown
 ```
 
@@ -192,22 +193,25 @@ Every knob is surfaced as an environment variable and validated by Zod at startu
 
 A few choices worth calling out — the longer-form rationale lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-- **In-memory vector store, not FAISS / pgvector.** A brute-force scan over a `Map<string, EmbeddedChunk>` is `O(N·D)`, perfectly adequate for take-home corpora, and removes a substantial dependency. The store is hidden behind a class — swapping it for a real backend later is a localized change.
+- **In-memory vector store behind a `VectorStore` interface.** A brute-force cosine scan over a `Map<string, EmbeddedChunk>` is `O(N·D)`, perfectly adequate for take-home corpora. Services depend on the interface, not the concrete `InMemoryVectorStore`, so swapping for pgvector / Qdrant is a single-file change at the composition root.
+- **Insert, not upsert.** The store's `insertDocument` throws on duplicate `documentId` — the previous "upsert" name implied idempotent overwrite that the implementation didn't deliver.
 - **Fixed-size character chunking with overlap.** Tokenizer-aware or semantic chunking is better in production but adds dependencies and complexity. 500-char windows with 100-char overlap give clean ingestion without dragging in `tiktoken`.
-- **Zod schemas drive both validation and OpenAPI.** One schema per request/response. `fastify-type-provider-zod` plus `jsonSchemaTransform` means Swagger UI cannot drift from the real validation rules.
-- **Thin controllers, fat services.** Controllers do request → service → response and nothing else. Business logic stays in `services/` and pure algorithms stay in `rag/`. This is what makes the codebase testable.
+- **Zod schemas drive both validation and OpenAPI.** One schema per request/response. `fastify-type-provider-zod` plus `jsonSchemaTransform` means Swagger UI cannot drift from the real validation rules. The one exception is `/ingest`'s multipart body (`format: binary` is not expressible in Zod), which is injected via a small swagger transform.
+- **Thin controllers, fat services.** Controllers do request → service → response and nothing else. Business logic stays in `services/` and pure algorithms stay in `rag/`.
 - **Ungrounded answers are explicit.** When no chunk passes the similarity threshold, or the LLM admits it can't answer, the response is the literal sentinel `"I could not find this information in the document."` with `grounded: false`. No hallucinated answers wearing the same shape as real ones.
-- **Single OpenAI client.** Lazily-initialized, process-wide. Avoids per-request TLS handshakes and centralizes the only piece of code that talks to a third-party API.
+- **Prompt-injection defense.** Excerpts are wrapped in a fenced delimiter and the system prompt instructs the model to treat their contents as untrusted data — instructions inside a document do not redirect the model.
+- **Constructor-injected OpenAI client with timeout + retries.** `createOpenAIClient(config)` is a plain factory called once in `buildApp`; `EmbeddingService` and `LLMService` accept the client in their constructors. No mutable module-level singleton, no test seam that ignores config changes. Client is configured with `timeout: 30s` and `maxRetries: 2` so a stuck OpenAI call cannot hold a Fastify handler indefinitely.
+- **Testable composition root.** `buildApp(config, overrides?)` accepts leaf-level overrides (`openai`, `store`, `embeddings`, `llm`) so tests can spin up the full HTTP surface in-process with fakes — no network, no module mutation.
 
 ---
 
 ## Tradeoffs
 
-- **State is lost on restart.** Acceptable for a take-home; persistence would be the first thing I'd add (JSON snapshot to `storage/`, or pgvector). The store's interface already isolates this.
-- **No auth.** Out of scope. Production would put this behind an auth middleware and per-tenant document namespaces.
+- **State is lost on restart.** Acceptable for a take-home; persistence would be the first thing I'd add (JSON snapshot to `storage/`, or pgvector). The `VectorStore` interface already isolates this.
+- **No auth, no multi-tenancy.** Out of scope. Anyone calling `/ingest` adds chunks to the same shared corpus that `/ask` reads from. Production would add an auth middleware and `tenantId`-scoped document namespaces.
 - **No re-ranking.** The top-3 chunks are passed straight to the LLM. A cross-encoder re-rank step (e.g. Cohere Rerank, BGE) would meaningfully improve answer quality on longer corpora.
-- **Plain-text only.** PDF/DOCX/HTML parsing is real engineering work and was deliberately left to a future loader layer.
-- **No retries on OpenAI failures.** The OpenAI SDK already retries idempotent failures internally; adding our own layer on top would be redundant. A circuit breaker would make sense at scale.
+- **No OCR.** Scanned (image-only) PDFs and DOCX files containing only images return `400 VALIDATION_ERROR`. OCR is real engineering work and out of scope.
+- **Limited retry policy.** The OpenAI SDK retries idempotent failures internally with `maxRetries: 2`. No outer circuit breaker; that would matter at scale.
 
 ---
 

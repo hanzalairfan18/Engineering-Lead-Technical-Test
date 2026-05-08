@@ -15,7 +15,7 @@ The service is a single Fastify process that owns three jobs:
 ```
                 ┌─────────────────────────────────────────────┐
                 │                Fastify HTTP                 │
-                │  /ingest   /ingest/file   /ask   /health    │
+                │      /ingest      /ask      /health         │
                 └──────────────┬──────────────┬───────────────┘
                                │              │
                        ┌───────▼─────┐  ┌─────▼─────────┐
@@ -34,8 +34,9 @@ The service is a single Fastify process that owns three jobs:
                                   └────────┘    └─────────┘
                                       │
                               ┌───────▼─────────┐
-                              │ InMemoryVector  │
-                              │ Store (rag)     │
+                              │  VectorStore    │ ← interface
+                              │  (in-memory     │   in rag/vectorstore;
+                              │   impl ships)   │   swap at composition root
                               └─────────────────┘
 ```
 
@@ -48,6 +49,8 @@ rag and utils are leaves. They never import from api or services.
 ```
 
 This keeps the RAG primitives pure and the services orchestration-only — both become trivial to unit-test.
+
+Concrete dependencies are wired only at the composition root (`src/app.ts`). Services type their dependencies as interfaces or injected SDK clients (`VectorStore`, `OpenAI`), never as concrete classes. Replacing the in-memory store with pgvector is a single-file change there.
 
 ---
 
@@ -82,7 +85,8 @@ POST /ingest  (multipart/form-data: file + optional source)
      → OpenAI text-embedding-3-small
      │
      ▼
- InMemoryVectorStore.upsertDocument
+ VectorStore.insertDocument
+     (throws on duplicate documentId — insert, not upsert)
      │
      ▼
  201 Created { document: meta }
@@ -115,7 +119,7 @@ POST /ask
  EmbeddingService.embedOne(question)
      │  → OpenAI text-embedding-3-small
      ▼
- InMemoryVectorStore.search(vector, topK=3, minScore=0.2)
+ VectorStore.search(vector, topK=3, minScore=0.35)
      │
      ▼
  Are there hits above threshold?
@@ -139,9 +143,10 @@ POST /ask
 **Why these specifics:**
 
 - **Top-K = 3** is a defensible default for short documents. It's a knob (`TOP_K`) so it can be tuned per deployment.
-- **Similarity threshold** prevents the LLM from being handed irrelevant chunks just because they were the *least bad* match. Below the floor, the service refuses to answer rather than risk a confidently-wrong response.
+- **Similarity threshold (default 0.35)** is calibrated for `text-embedding-3-small`: unrelated short English passages typically score 0.15–0.30, so 0.35 sits above the noise floor. Below the threshold, the service refuses to answer rather than feed weak matches to the LLM.
 - **Temperature 0.1** for the answer call. We want the model to lean on the provided context, not improvise.
-- **The system prompt explicitly instructs the model to refuse with the literal sentinel string.** Combined with the threshold, this gives two independent safeguards against ungrounded answers.
+- **Two independent grounding gates.** The threshold filters retrieval; the system prompt instructs the model to emit the literal sentinel string when nothing in the excerpts supports an answer. Either gate alone is leaky; together they keep ungrounded answers rare.
+- **Prompt-injection defense.** Each excerpt body is wrapped in a unique fence (`<<<EXCERPT_BODY>>>`); the system prompt's UNTRUSTED CONTENT RULE instructs the model to treat fenced content as data, never as instructions, regardless of what the document tries to say.
 - **Sources are returned with score and a preview**, so the caller can render citations or debug retrieval quality without needing a separate endpoint.
 
 ---
@@ -152,7 +157,7 @@ POST /ask
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | **Fastify**                             | Faster than Express, schema-first, first-class Zod integration via `fastify-type-provider-zod`.         |
 | **TypeScript (strict)**                 | Domain types are the spec. Catches whole categories of bugs at compile time.                            |
-| **Zod everywhere**                      | One schema validates the request and generates the OpenAPI fragment — no drift between docs and reality. |
+| **Zod for JSON I/O**                    | One schema validates the request and generates the OpenAPI fragment — no drift between docs and reality. The `/ingest` multipart body uses raw JSON Schema (`format: binary` is not expressible in Zod) and is injected via a small swagger transform. |
 | **OpenAI `text-embedding-3-small`**     | 1536-dim, cheap, L2-normalized output. Strong baseline for English.                                     |
 | **OpenAI `gpt-4.1-mini`**               | Strong instruction-following at low cost, suitable for grounded QA.                                     |
 | **`pdf-parse` + `mammoth`**             | Smallest credible footprint for PDF and DOCX text extraction. Both MIT, both pure-JS, both stable.       |
@@ -220,9 +225,21 @@ Out of scope to ship here, but the codebase is structured for it:
 
 - `rag/chunking` — pure function, deterministic. Trivial unit tests.
 - `rag/similarity/cosine` — pure, golden-vector tests.
-- `rag/vectorstore` — top-K ordering, threshold filtering, reset semantics.
-- `services/ingestion` — with a mocked `EmbeddingService`, asserts the full normalize→chunk→embed→store path.
-- `services/retrieval` — mocked embedding + mocked LLM; assert the no-context branch returns the sentinel.
-- `api/*` — `app.inject({ method, url, payload })` tests with a mocked OpenAI client; covers schema validation, error envelopes, and Swagger generation.
+- `rag/vectorstore` — top-K ordering, threshold filtering, `insertDocument` duplicate-id rejection, reset semantics.
+- `services/ingestion` — with a mocked `EmbeddingService`, asserts the full normalize→chunk→embed→store path and the empty-text rejection.
+- `services/retrieval` — mocked embedding + mocked LLM; asserts the no-context branch returns the sentinel.
+- `api/*` — `app.inject({ method, url, payload })` tests; covers schema validation, error envelopes, and Swagger generation.
 
-The `app.ts` factory was written specifically so tests can spin up the full HTTP surface in-process without listening on a port.
+`buildApp(config, overrides?)` accepts leaf-level overrides (`openai`, `store`, `embeddings`, `llm`) so tests can swap any of those for a fake without touching module state:
+
+```ts
+const fakeEmbeddings = {
+  embedOne: async () => fakeVector,
+  embedMany: async (texts) => texts.map(() => fakeVector),
+} as unknown as EmbeddingService;
+
+const app = await buildApp(testConfig, { embeddings: fakeEmbeddings });
+const res = await app.inject({ method: 'POST', url: '/ask', payload: { question: '...' } });
+```
+
+The factory was written specifically so tests can spin up the full HTTP surface in-process without listening on a port.
