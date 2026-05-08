@@ -1,6 +1,6 @@
+import type OpenAI from 'openai';
 import type { AppConfig } from '../config/env';
 import { UpstreamError } from '../utils/errors';
-import { getOpenAIClient } from './openai-client';
 
 export interface CompleteOptions {
   systemPrompt: string;
@@ -14,14 +14,19 @@ export interface CompleteOptions {
  * Centralizing this in a single service means the model name, temperature
  * defaults, and error mapping live in one place — controllers and the RAG
  * orchestrator never call the SDK directly.
+ *
+ * The OpenAI client is injected so tests can pass a mock without touching
+ * module state.
  */
 export class LLMService {
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly openai: OpenAI,
+    private readonly config: AppConfig,
+  ) {}
 
   async complete({ systemPrompt, userPrompt, temperature = 0.1 }: CompleteOptions): Promise<string> {
-    const client = getOpenAIClient(this.config);
     try {
-      const response = await client.chat.completions.create({
+      const response = await this.openai.chat.completions.create({
         model: this.config.OPENAI_CHAT_MODEL,
         temperature,
         messages: [

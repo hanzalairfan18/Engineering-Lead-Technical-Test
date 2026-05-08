@@ -1,6 +1,6 @@
+import type OpenAI from 'openai';
 import type { AppConfig } from '../config/env';
 import { UpstreamError } from '../utils/errors';
-import { getOpenAIClient } from './openai-client';
 
 /**
  * Embedding service. Wraps the OpenAI embeddings endpoint and exposes two
@@ -12,11 +12,17 @@ import { getOpenAIClient } from './openai-client';
  * us under OpenAI's per-request input cap (2048 inputs / 300k tokens). Large
  * documents are split into sequential batches so a single ingestion call
  * never exceeds the limit.
+ *
+ * The OpenAI client is injected so tests can pass a mock without touching
+ * module state.
  */
 const EMBED_BATCH_SIZE = 1024;
 
 export class EmbeddingService {
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly openai: OpenAI,
+    private readonly config: AppConfig,
+  ) {}
 
   async embedOne(text: string): Promise<number[]> {
     const [vector] = await this.embedMany([text]);
@@ -26,12 +32,11 @@ export class EmbeddingService {
 
   async embedMany(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
-    const client = getOpenAIClient(this.config);
     const out: number[][] = [];
     try {
       for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
         const slice = texts.slice(i, i + EMBED_BATCH_SIZE);
-        const response = await client.embeddings.create({
+        const response = await this.openai.embeddings.create({
           model: this.config.OPENAI_EMBEDDING_MODEL,
           input: slice,
         });
