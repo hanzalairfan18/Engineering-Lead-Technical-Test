@@ -8,7 +8,7 @@ This document explains how the service is put together, why each piece looks the
 
 The service is a single Fastify process that owns three jobs:
 
-1. **Ingest** — accept document text, normalize it, split it into chunks, embed each chunk, and store the vectors.
+1. **Ingest** — accept a PDF or DOCX upload, extract text, normalize it, split it into chunks, embed each chunk, and store the vectors.
 2. **Retrieve** — embed an incoming question, find the most similar chunks via cosine similarity, and pack them into a prompt.
 3. **Answer** — send that prompt to a chat model and return the answer with citations.
 
@@ -186,7 +186,7 @@ Brute-force cosine over a few thousand chunks is fine. Past that:
 ### 5.3 Throughput and resilience
 
 - **Rate limiting** on `/ingest` and `/ask` — `@fastify/rate-limit` per IP/API-key.
-- **Backpressure on ingestion** — large documents currently embed all chunks in one shot. For 100k+-chunk corpora, ingestion should be chunked into batches with a concurrency cap.
+- **Embedding concurrency** — large documents are already batched in 1024-input slices to stay under OpenAI's per-request cap, but the slices run sequentially. For 100k+-chunk corpora, run them in parallel with a small concurrency cap (e.g. `p-limit(4)`) and add per-batch retry with jitter.
 - **Circuit breaker** around the OpenAI client. The SDK retries internally; we'd add an outer breaker that opens on sustained 5xx and serves a 503 with `Retry-After` rather than queueing.
 - **Idempotency keys** on `/ingest` so retries don't double-store.
 
