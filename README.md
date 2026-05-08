@@ -19,6 +19,7 @@ Built for the Engineering Lead take-home: the goal is **clean engineering and cl
 - **Vector store:** in-memory cosine similarity (brute-force, predictable, zero-dep)
 - **Docs:** Swagger UI at `/docs` generated from the same Zod schemas the API validates against
 - **Quality:** ESLint + Prettier, strict TS, centralized error handling
+- **Tests:** Vitest — RAG primitives unit-tested; full HTTP surface tested via `app.inject` with fakes injected through `buildApp` overrides
 - **Packaging:** multi-stage Dockerfile + `docker compose`
 
 ---
@@ -183,9 +184,11 @@ Every knob is surfaced as an environment variable and validated by Zod at startu
 | `npm run build`    | TypeScript compile to `dist/`               |
 | `npm start`        | run compiled JS                             |
 | `npm run typecheck`| `tsc --noEmit`                              |
-| `npm run lint`     | ESLint over `src/`                          |
+| `npm run lint`     | ESLint over `src/` and `tests/`             |
 | `npm run lint:fix` | ESLint with `--fix`                         |
 | `npm run format`   | Prettier write                              |
+| `npm run test`     | Vitest, run once                            |
+| `npm run test:watch`| Vitest, watch mode                         |
 
 ---
 

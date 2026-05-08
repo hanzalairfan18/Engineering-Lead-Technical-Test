@@ -219,18 +219,16 @@ Some things sound prudent but are easy to overdo:
 
 ---
 
-## 6. Test surface (suggested)
+## 6. Test surface
 
-Out of scope to ship here, but the codebase is structured for it:
+Tests live under `tests/`, run with `npm run test` (Vitest). The suite is intentionally narrow but exercises every load-bearing layer:
 
-- `rag/chunking` — pure function, deterministic. Trivial unit tests.
-- `rag/similarity/cosine` — pure, golden-vector tests.
-- `rag/vectorstore` — top-K ordering, threshold filtering, `insertDocument` duplicate-id rejection, reset semantics.
-- `services/ingestion` — with a mocked `EmbeddingService`, asserts the full normalize→chunk→embed→store path and the empty-text rejection.
-- `services/retrieval` — mocked embedding + mocked LLM; asserts the no-context branch returns the sentinel.
-- `api/*` — `app.inject({ method, url, payload })` tests; covers schema validation, error envelopes, and Swagger generation.
+- `tests/rag/cosine.test.ts` — pure cosine math; identical / orthogonal / opposite vectors, magnitude invariance, length-mismatch error.
+- `tests/rag/chunker.test.ts` — empty input, sub-size text, overlap math, offset bounds, invalid params, unique chunk ids.
+- `tests/rag/in-memory-vector-store.test.ts` — top-K ordering, threshold filtering, `insertDocument` duplicate-id rejection, listing order, reset semantics.
+- `tests/api/app.test.ts` — full HTTP surface via `app.inject(...)`. Asserts `/health`, `/ask` no-context sentinel, `/ask` happy path with sources (and that the prompt-injection fence appears in the user prompt), `/ask` validation rejection, `/ingest` no-file and bad-MIME rejection, and `/docs/json` exposing the multipart file picker schema.
 
-`buildApp(config, overrides?)` accepts leaf-level overrides (`openai`, `store`, `embeddings`, `llm`) so tests can swap any of those for a fake without touching module state:
+The HTTP tests use `buildApp(config, overrides)` to swap in fakes:
 
 ```ts
 const fakeEmbeddings = {
@@ -242,4 +240,4 @@ const app = await buildApp(testConfig, { embeddings: fakeEmbeddings });
 const res = await app.inject({ method: 'POST', url: '/ask', payload: { question: '...' } });
 ```
 
-The factory was written specifically so tests can spin up the full HTTP surface in-process without listening on a port.
+No network, no listening port, no module mutation — the factory was written specifically for this.
