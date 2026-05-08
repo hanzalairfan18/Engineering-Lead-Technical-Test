@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config/env';
 import { chunkText } from '../rag/chunking/fixed-chunker';
-import type { InMemoryVectorStore } from '../rag/vectorstore/vector-store';
+import type { VectorStore } from '../rag/vectorstore/vector-store';
 import type { DocumentMetadata, EmbeddedChunk } from '../types';
 import { UpstreamError, ValidationError } from '../utils/errors';
 import { newId } from '../utils/ids';
@@ -28,7 +28,7 @@ export class IngestionService {
   constructor(
     private readonly config: AppConfig,
     private readonly embeddings: EmbeddingService,
-    private readonly store: InMemoryVectorStore,
+    private readonly store: VectorStore,
   ) {}
 
   async ingest({ text, source }: IngestInput): Promise<IngestResult> {
@@ -65,7 +65,7 @@ export class IngestionService {
       ingestedAt: new Date().toISOString(),
     };
 
-    this.store.upsertDocument(meta, embedded);
+    this.store.insertDocument(meta, embedded);
     return { document: meta };
   }
 }

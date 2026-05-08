@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config/env';
 import { buildUserPrompt, NO_CONTEXT_ANSWER, SYSTEM_PROMPT } from '../rag/prompts/qa-prompt';
-import type { InMemoryVectorStore } from '../rag/vectorstore/vector-store';
+import type { VectorStore } from '../rag/vectorstore/vector-store';
 import type { AskResult } from '../types';
 import { preview } from '../utils/text';
 import type { EmbeddingService } from './embedding.service';
@@ -18,7 +18,7 @@ export class RetrievalService {
     private readonly config: AppConfig,
     private readonly embeddings: EmbeddingService,
     private readonly llm: LLMService,
-    private readonly store: InMemoryVectorStore,
+    private readonly store: VectorStore,
   ) {}
 
   async ask(question: string): Promise<AskResult> {

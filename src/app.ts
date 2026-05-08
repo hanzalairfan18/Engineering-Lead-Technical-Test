@@ -7,7 +7,7 @@ import {
 } from 'fastify-type-provider-zod';
 
 import type { AppConfig } from './config/env';
-import { InMemoryVectorStore } from './rag/vectorstore/vector-store';
+import { InMemoryVectorStore } from './rag/vectorstore/in-memory-vector-store';
 import { DocumentService } from './services/document.service';
 import { EmbeddingService } from './services/embedding.service';
 import { IngestionService } from './services/ingestion.service';

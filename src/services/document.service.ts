@@ -1,5 +1,5 @@
 import type { DocumentMetadata } from '../types';
-import type { InMemoryVectorStore } from '../rag/vectorstore/vector-store';
+import type { VectorStore } from '../rag/vectorstore/vector-store';
 
 /**
  * Read-only view over ingested documents. Kept separate from the ingestion
@@ -7,7 +7,7 @@ import type { InMemoryVectorStore } from '../rag/vectorstore/vector-store';
  * the embedding pipeline.
  */
 export class DocumentService {
-  constructor(private readonly store: InMemoryVectorStore) {}
+  constructor(private readonly store: VectorStore) {}
 
   list(): DocumentMetadata[] {
     return this.store.listDocuments();
